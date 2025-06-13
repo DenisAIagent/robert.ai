@@ -1,93 +1,137 @@
-cat > main.py << 'EOF'
+#!/usr/bin/env python3
+"""
+DevCraft AI - Générateur d'Applications Intelligentes
+Backend FastAPI avec interface React intégrée
+"""
+
 import os
 import sys
-from dotenv import load_dotenv
+from pathlib import Path
 
-# Charger les variables d'environnement
-load_dotenv()
+# Configuration du path
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
 
-# DON'T CHANGE THIS !!!
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, HTMLResponse
+import uvicorn
+from contextlib import asynccontextmanager
 
-from flask import Flask, send_from_directory, jsonify
-from flask_cors import CORS
-from src.models.user import db
-from src.routes.user import user_bp
-from src.routes.api_keys import api_keys_bp
-from src.routes.generator import generator_bp
+# Import des modules API
+from api.server import app as api_app
+from api.models import *
+from api.utils import setup_logging, cleanup_old_archives
 
-app = Flask(__name__, static_folder=os.path.join(os.path.dirname(__file__), 'static'))
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'asdf#FGSgvasgf$5$WGT')
+# Configuration de l'environnement
+ENVIRONMENT = os.getenv("RAILWAY_ENVIRONMENT", "development")
+PORT = int(os.getenv("PORT", 8000))
+HOST = "0.0.0.0"
 
-# Activer CORS pour toutes les routes
-CORS(app, origins=['*'])
+# Configuration des répertoires
+STATIC_DIR = project_root / "dist"
+LOGS_DIR = project_root / "logs"
+WORKSPACE_DIR = project_root / "workspace"
+ARCHIVES_DIR = project_root / "archives"
 
-# Enregistrer les blueprints
-app.register_blueprint(user_bp, url_prefix='/api')
-app.register_blueprint(api_keys_bp, url_prefix='/api')
-app.register_blueprint(generator_bp, url_prefix='/api')
+# Créer les répertoires nécessaires
+for directory in [LOGS_DIR, WORKSPACE_DIR, ARCHIVES_DIR]:
+    directory.mkdir(exist_ok=True)
 
-# Configuration de la base de données
-database_path = os.path.join(os.path.dirname(__file__), 'database', 'app.db')
-app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{database_path}"
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# Initialiser la base de données
-db.init_app(app)
-with app.app_context():
-    # Créer le répertoire database s'il n'existe pas
-    os.makedirs(os.path.dirname(database_path), exist_ok=True)
-    db.create_all()
-
-# Route de santé pour vérifier que l'API fonctionne
-@app.route('/api/health')
-def health_check():
-    return jsonify({
-        'status': 'OK',
-        'message': 'DevCraft AI Backend opérationnel',
-        'version': '2.0.0',
-        'timestamp': '2024-12-10T12:00:00Z',
-        'environment': os.getenv('RAILWAY_ENVIRONMENT', 'development')
-    })
-
-# Route pour servir le frontend build
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
-def serve(path):
-    # En production, servir les fichiers build de React
-    dist_folder = os.path.join(os.path.dirname(__file__), 'dist')
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Gestion du cycle de vie de l'application"""
+    # Startup
+    setup_logging(str(LOGS_DIR))
+    print("🚀 DevCraft AI Backend démarré")
+    print(f"📡 API disponible sur: http://{HOST}:{PORT}/api")
+    print(f"🔍 Health check: http://{HOST}:{PORT}/health")
     
-    if os.path.exists(dist_folder):
-        if path != "" and os.path.exists(os.path.join(dist_folder, path)):
-            return send_from_directory(dist_folder, path)
-        else:
-            return send_from_directory(dist_folder, 'index.html')
-    else:
-        # En développement, rediriger vers le frontend React
-        return jsonify({
-            'message': 'DevCraft AI Backend',
-            'frontend_dev': 'http://localhost:5173',
-            'api': '/api',
-            'health': '/api/health'
-        })
+    if ENVIRONMENT != "production":
+        print("🎨 Frontend Dev: http://localhost:5173")
+    
+    yield
+    
+    # Shutdown
+    cleanup_old_archives()
+    print("👋 DevCraft AI Backend arrêté")
 
-if __name__ == '__main__':
-    # Railway fournit la variable PORT
-    port = int(os.getenv('PORT', 5002))
+# Création de l'application principale
+app = FastAPI(
+    title="DevCraft AI",
+    description="Générateur d'Applications Intelligentes",
+    version="2.0.0",
+    lifespan=lifespan,
+    docs_url="/api/docs" if ENVIRONMENT != "production" else None,
+    redoc_url="/api/redoc" if ENVIRONMENT != "production" else None
+)
+
+# Configuration CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if ENVIRONMENT != "production" else ["https://your-domain.com"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Montage de l'API
+app.mount("/api", api_app)
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Endpoint de santé pour Railway"""
+    return {
+        "status": "healthy",
+        "service": "DevCraft AI",
+        "version": "2.0.0",
+        "environment": ENVIRONMENT,
+        "timestamp": "2024-12-10T12:00:00Z"
+    }
+
+# Configuration pour servir le frontend
+if STATIC_DIR.exists():
+    # Servir les fichiers statiques
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR / "assets")), name="static")
     
-    # Environnement de production ou développement
-    is_production = os.getenv('RAILWAY_ENVIRONMENT') == 'production'
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """Servir le frontend React"""
+        file_path = STATIC_DIR / full_path
+        
+        # Si le fichier existe, le servir
+        if file_path.is_file():
+            return FileResponse(file_path)
+        
+        # Sinon, servir index.html pour le routing React
+        index_path = STATIC_DIR / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+        
+        return HTMLResponse("Frontend not built. Run 'npm run build' first.")
+else:
+    @app.get("/")
+    async def development_info():
+        """Info de développement quand le frontend n'est pas build"""
+        return {
+            "message": "DevCraft AI Backend",
+            "status": "development",
+            "frontend_dev": "http://localhost:5173",
+            "api_docs": f"http://{HOST}:{PORT}/api/docs",
+            "health": f"http://{HOST}:{PORT}/health"
+        }
+
+if __name__ == "__main__":
+    # Configuration pour le développement local
+    config = {
+        "host": HOST,
+        "port": PORT,
+        "reload": ENVIRONMENT != "production",
+        "log_level": "info",
+        "access_log": True
+    }
     
-    print("🚀 Démarrage de DevCraft AI Backend...")
-    print(f"📡 API disponible sur: http://0.0.0.0:{port}/api")
-    print(f"🔍 Health check: http://0.0.0.0:{port}/api/health")
-    
-    if not is_production:
-        print("🎨 Frontend React: http://localhost:5173")
-    
-    app.run(
-        host='0.0.0.0',
-        port=port,
-        debug=not is_production
-    )
-EOF
+    print(f"🚀 Démarrage de DevCraft AI sur {HOST}:{PORT}")
+    uvicorn.run("main:app", **config)

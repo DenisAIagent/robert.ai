@@ -1,0 +1,94 @@
+# DevCraft AI - Makefile d'automatisation
+# Utilisation: make [commande]
+
+.PHONY: help install clean build test run deploy health logs
+
+# Configuration
+PYTHON := python3
+NPM := npm
+PIP := pip
+PORT := 8000
+VENV := venv
+
+# Couleurs pour l'affichage
+RED := \033[0;31m
+GREEN := \033[0;32m
+YELLOW := \033[1;33m
+BLUE := \033[0;34m
+NC := \033[0m
+
+# === COMMANDES PRINCIPALES ===
+
+help: ## Afficher l'aide
+	@echo "$(BLUE)DevCraft AI - Commandes disponibles:$(NC)"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(GREEN)%-15s$(NC) %s\n", $$1, $$2}'
+
+install: ## Installer toutes les dépendances
+	@echo "$(BLUE)Installation des dépendances...$(NC)"
+	@$(MAKE) install-python
+	@$(MAKE) install-node
+	@echo "$(GREEN)✅ Installation terminée$(NC)"
+
+install-python: ## Installer les dépendances Python
+	@echo "$(YELLOW)Installation des dépendances Python...$(NC)"
+	@if [ ! -d "$(VENV)" ]; then \
+		$(PYTHON) -m venv $(VENV); \
+	fi
+	@. $(VENV)/bin/activate && $(PIP) install --upgrade pip
+	@. $(VENV)/bin/activate && $(PIP) install -r requirements.txt
+	@echo "$(GREEN)✅ Dépendances Python installées$(NC)"
+
+install-node: ## Installer les dépendances Node.js
+	@echo "$(YELLOW)Installation des dépendances Node.js...$(NC)"
+	@$(NPM) ci --legacy-peer-deps
+	@echo "$(GREEN)✅ Dépendances Node.js installées$(NC)"
+
+clean: ## Nettoyer les fichiers temporaires
+	@echo "$(YELLOW)Nettoyage...$(NC)"
+	@rm -rf dist/ build/ .vite/ $(VENV)/
+	@find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	@find . -name "*.pyc" -delete 2>/dev/null || true
+	@$(NPM) cache clean --force 2>/dev/null || true
+	@echo "$(GREEN)✅ Nettoyage terminé$(NC)"
+
+build: ## Builder le frontend
+	@echo "$(YELLOW)Construction du frontend...$(NC)"
+	@$(NPM) run build
+	@echo "$(GREEN)✅ Frontend construit$(NC)"
+
+test: ## Exécuter tous les tests
+	@echo "$(YELLOW)Exécution des tests...$(NC)"
+	@$(MAKE) test-python
+	@$(MAKE) test-node
+	@echo "$(GREEN)✅ Tous les tests passés$(NC)"
+
+test-python: ## Tests Python
+	@if [ -d "$(VENV)" ]; then \
+		. $(VENV)/bin/activate && $(PYTHON) -m pytest --tb=short; \
+	else \
+		$(PYTHON) -m pytest --tb=short; \
+	fi
+
+test-node: ## Tests Node.js
+	@$(NPM) test -- --passWithNoTests
+
+run: ## Démarrer l'application en mode développement
+	@echo "$(BLUE)Démarrage de DevCraft AI...$(NC)"
+	@if [ -d "$(VENV)" ]; then \
+		. $(VENV)/bin/activate && $(PYTHON) main.py; \
+	else \
+		$(PYTHON) main.py; \
+	fi
+
+run-dev: ## Démarrer en mode développement avec reload
+	@echo "$(BLUE)Démarrage en mode développement...$(NC)"
+	@if [ -d "$(VENV)" ]; then \
+		. $(VENV)/bin/activate && uvicorn main:app --reload --host 0.0.0.0 --port $(PORT); \
+	else \
+		uvicorn main:app --reload --host 0.0.0.0 --port $(PORT); \
+	fi
+
+# === DÉPLOIEMENT ===
+
+deploy: ## Déployer sur Railway
+	@echo "$(BLUE)Déploiement sur Railway...$(NC)"
